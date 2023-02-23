@@ -213,6 +213,7 @@ class ModelUpdaterCLI:
 
         args = argparse.Namespace(**vars(known_args), **additional_args)
         args.early_stopping = args.early_stopping == "True"
+        args.deterministic_trainer = args.deterministic_trainer == "True"
 
         seed_everything(args.seed)
         self._prepare_data_state_model(args)
@@ -247,8 +248,8 @@ class ModelUpdaterCLI:
             logged_metrics=metrics,
             accelerator=args.accelerator,
             devices=args.devices,
-            early_stopping_enabled=bool(args.early_stopping),
-            deterministic_trainer=bool(args.deterministic_trainer),
+            early_stopping_enabled=args.early_stopping,
+            deterministic_trainer=args.deterministic_trainer,
             **learner_kwargs,
             **get_transforms_kwargs(config_module, args),
         )
