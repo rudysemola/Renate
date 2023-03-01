@@ -11,6 +11,7 @@ from renate import defaults
 from renate.types import NestedTensors
 from renate.utils.pytorch import get_generator
 
+
 DataDict = Dict[str, torch.Tensor]
 Index = Union[int, slice]
 

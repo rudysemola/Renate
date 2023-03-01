@@ -66,7 +66,7 @@ def test_run_training_job(
                 mode="max",
                 config_space={
                     "learning_rate": 0.1 if fixed_search_space else loguniform(10e-5, 0.1),
-                    "data_module_fn_val_size": val_size,
+                    "val_size": val_size,
                 },
                 metric="val_accuracy",
                 max_time=15,
@@ -132,7 +132,7 @@ def test_verify_validation_set_for_hpo_and_checkpointing(tmpdir, val_size, tune_
     If a validation set exists, the `config_space` must be changed such that the right metric and
     mode for checkpointing and hyperparameter optimization is used.
     """
-    config_space = {"data_module_fn_val_size": val_size}
+    config_space = {"val_size": val_size}
     expected_metric = "val_accuracy"
     expected_mode: defaults.SUPPORTED_TUNING_MODE_TYPE = "max"
 

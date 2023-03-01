@@ -31,7 +31,7 @@ from syne_tune.util import experiment_path
 
 import renate
 from renate import defaults
-from renate.cli.parsing_functions import get_data_module_fn_args
+from renate.cli.parsing_functions import get_data_module_fn_kwargs
 from renate.utils.file import move_to_uri
 from renate.utils.module import get_and_prepare_data_module, import_module
 from renate.utils.syne_tune import (
@@ -422,9 +422,7 @@ def _verify_validation_set_for_hpo_and_checkpointing(
     data_module = get_and_prepare_data_module(
         config_module,
         data_path=defaults.data_folder(working_directory),
-        chunk_id=chunk_id,
-        seed=seed,
-        **get_data_module_fn_args(config_space),
+        **get_data_module_fn_kwargs(config_module, config_space),
     )
     data_module.setup()
     val_exists = data_module.val_data() is not None
@@ -522,7 +520,7 @@ def _execute_training_and_tuning_job_locally(
     config_space["seed"] = seed
     config_space["accelerator"] = accelerator
     config_space["devices"] = devices
-    config_space["deterministric_trainer"] = deterministic_trainer
+    config_space["deterministic_trainer"] = deterministic_trainer
     if input_state_url is not None:
         config_space["input_state_url"] = input_state_url
 
@@ -608,7 +606,7 @@ def _execute_training_and_tuning_job_locally(
 
 
 def submit_remote_job(
-    source_dir: str,
+    source_dir: Union[str, None],
     role: str,
     instance_type: str,
     instance_count: int,
