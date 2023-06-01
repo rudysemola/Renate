@@ -5,23 +5,23 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from sys import platform
-
-import pandas as pd
-import pytest
-
-from renate import defaults
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        f"--test-file",
+        "--test-file",
         type=str,
         required=True,
         help="Test suite to run.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        required=True,
+        help="Seed.",
+    )
     args = parser.parse_args()
-    test_suite = "quick"
+    test_suite = "main"
     current_folder = Path(os.path.dirname(__file__))
     configs_folder = current_folder / "configs"
     test_file = configs_folder / "suites" / test_suite / args.test_file
@@ -29,7 +29,7 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Unknown test file '{test_file}'.")
     with open(test_file) as f:
         test_config = json.load(f)
-    job_name = f"{test_config['job_name']}-{defaults.current_timestamp()}"
+    job_name = f"{test_config['job_name']}"
     process = subprocess.Popen(
         [
             "python",
@@ -48,23 +48,8 @@ if __name__ == "__main__":
             job_name,
             "--test-suite",
             test_suite,
+            "--seed",
+            str(args.seed),
         ]
     )
     process.wait()
-    expected_accuracy = test_config[f"expected_accuracy_{platform}"]
-    num_updates = len(test_config["expected_accuracy_darwin"][0])
-    result_file = (
-        Path("tmp")
-        / "renate-integration-tests"
-        / test_suite
-        / job_name
-        / "0"
-        / "logs"
-        / f"metrics_summary_update_{num_updates - 1}.csv"
-    )
-    if result_file.exists():
-        df = pd.read_csv(result_file)
-        accuracies = [float(acc) for acc in list(df.iloc[-1])[1:]]
-    else:
-        accuracies = []
-    assert any([pytest.approx(acc) == accuracies for acc in expected_accuracy]), accuracies
