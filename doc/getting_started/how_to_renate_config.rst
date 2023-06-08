@@ -49,6 +49,24 @@ method, but simply reinstantiate your model and call :code:`load_state_dict`.
         return model
 
 
+Loss Definition
+================
+
+This function returns a :code:`torch.nn.Module` object that computes the loss with the 
+signature 
+
+.. code-block:: python 
+    
+    def loss_fn() -> torch.nn.Module:
+
+An example of this for the task of MNIST classification above as
+
+.. literalinclude:: ../../examples/getting_started/renate_config.py
+    :caption: Loss function example
+    :lines: 95-96
+
+Please note, loss functions should not be reduced.
+
 Data Preparation
 ================
 
@@ -67,7 +85,7 @@ such as data subsampling or splitting.
 
 .. literalinclude:: ../../examples/getting_started/renate_config.py
     :caption: Example
-    :lines: 43-66
+    :lines: 41-68
 
 Transforms
 ==========
@@ -112,7 +130,7 @@ These are optional as well but, if omitted, Renate will use :code:`train_transfo
 
 .. literalinclude:: ../../examples/getting_started/renate_config.py
     :caption: Example
-    :lines: 73-90
+    :lines: 71-78
 
 Custom Metrics
 ==============

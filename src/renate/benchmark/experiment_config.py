@@ -231,6 +231,12 @@ def get_scenario(
     raise ValueError(f"Unknown scenario `{scenario_name}`.")
 
 
+def loss_fn(updater: Optional[str] = None) -> torch.nn.Module:
+    if updater.startswith("Avalanche-"):
+        return torch.nn.CrossEntropyLoss()
+    return torch.nn.CrossEntropyLoss(reduction="none")
+
+
 def data_module_fn(
     data_path: str,
     chunk_id: int,
@@ -300,6 +306,14 @@ def train_transform(dataset_name: str) -> Optional[transforms.Compose]:
                 _get_normalize_transform(dataset_name),
             ]
         )
+    if dataset_name in ["CLEAR10", "CLEAR100"]:
+        return transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.RandomCrop(224),
+                _get_normalize_transform(dataset_name),
+            ]
+        )
     raise ValueError(f"Unknown dataset `{dataset_name}`.")
 
 
@@ -312,4 +326,12 @@ def test_transform(dataset_name: str) -> Optional[transforms.Normalize]:
         return None
     if dataset_name in ["CIFAR10", "CIFAR100"]:
         return _get_normalize_transform(dataset_name)
+    if dataset_name in ["CLEAR10", "CLEAR100"]:
+        return transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                _get_normalize_transform(dataset_name),
+            ]
+        )
     raise ValueError(f"Unknown dataset `{dataset_name}`.")

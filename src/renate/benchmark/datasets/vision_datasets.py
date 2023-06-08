@@ -127,6 +127,8 @@ class TorchVisionDataModule(RenateDataModule):
         },
         "FashionMNIST": {"mean": 0.2860405969887955, "std": 0.3530242445149223},
         "MNIST": {"mean": 0.1306604762738429, "std": 0.30810780385646264},
+        "CLEAR10": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+        "CLEAR100": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
     }
 
     def __init__(
@@ -172,15 +174,19 @@ class TorchVisionDataModule(RenateDataModule):
             self._data_path,
             train=True,
             transform=transforms.ToTensor(),
-            target_transform=transforms.Lambda(lambda x: torch.tensor(x, dtype=torch.long)),
+            target_transform=transforms.Lambda(to_long),
         )
         self._train_data, self._val_data = self._split_train_val_data(train_data)
         self._test_data = cls(
             self._data_path,
             train=False,
             transform=transforms.ToTensor(),
-            target_transform=transforms.Lambda(lambda x: torch.tensor(x, dtype=torch.long)),
+            target_transform=transforms.Lambda(to_long),
         )
+
+
+def to_long(x):
+    return torch.tensor(x, dtype=torch.long)
 
 
 class CLEARDataModule(RenateDataModule):

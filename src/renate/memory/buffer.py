@@ -8,7 +8,8 @@ import torch
 from torch.utils.data import Dataset
 
 from renate import defaults
-from renate.memory.storage import MemoryMappedTensorStorage
+from renate.data.datasets import IndexedSubsetDataset
+from renate.memory.storage import FileTensorStorage
 from renate.types import NestedTensors
 from renate.utils.pytorch import get_generator
 
@@ -126,13 +127,6 @@ class DataBuffer(Dataset):
             self._add_metadata_like({key: values})
         self._metadata[key][: len(self)] = values.cpu()
 
-    def set_transforms(
-        self, transform: Optional[Callable] = None, target_transform: Optional[Callable] = None
-    ) -> None:
-        """Update the transformations applied to the data."""
-        self._transform = transform
-        self._target_transform = target_transform
-
     def state_dict(self) -> Dict:
         return {
             "buffer_class_name": self.__class__.__name__,
@@ -164,26 +158,17 @@ class DataBuffer(Dataset):
 
         transforms = self._transform, self._target_transform
         self._transform, self._target_transform = None, None
-        storage = MemoryMappedTensorStorage(
-            target_dir,
-            data_point=self._data_point_prototype,
-            length=len(self),
-        )
-        for i in range(len(self)):
-            storage[i] = self[i][0]  # Drop metadata.
+        storage = FileTensorStorage(target_dir)
+        storage.dump_dataset(IndexedSubsetDataset(self, [0]))
         self._datasets = [storage]
         self._indices = {i: (0, i) for i in range(len(self))}
-        self.set_transforms(*transforms)
+        self._transform, self._target_transform = transforms
 
     def load(self, source_dir: str) -> None:
         if not len(self):
             return
 
-        storage = MemoryMappedTensorStorage(
-            source_dir,
-            data_point=self._data_point_prototype,
-            length=len(self),
-        )
+        storage = FileTensorStorage(source_dir)
         self._datasets = [storage]
 
     def _add_metadata_like(self, metadata: DataDict):

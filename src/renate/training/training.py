@@ -90,6 +90,8 @@ def run_training_job(
     seed: int = defaults.SEED,
     accelerator: defaults.SUPPORTED_ACCELERATORS_TYPE = defaults.ACCELERATOR,
     devices: int = defaults.DEVICES,
+    strategy: str = defaults.DISTRIBUTED_STRATEGY,
+    precision: str = defaults.PRECISION,
     deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
     job_name: str = defaults.JOB_NAME,
 ) -> Optional[Tuner]:
@@ -131,7 +133,9 @@ def run_training_job(
         scheduler_kwargs: Only required if custom scheduler is provided.
         seed: Seed used for ensuring reproducibility.
         accelerator: Type of accelerator to use.
-        devices: Number of devices to use.
+        devices: Number of devices to use per worker (set in n_workers).
+        strategy: Name of the distributed training strategy to use.
+        precision: Type of bit precision to use.
         deterministic_trainer: When true the Trainer adopts a deterministic behaviour also on GPU.
         job_name: Prefix for the name of the SageMaker training job.
     """
@@ -168,6 +172,8 @@ def run_training_job(
             seed=seed,
             accelerator=accelerator,
             devices=devices,
+            strategy=strategy,
+            precision=precision,
             deterministic_trainer=deterministic_trainer,
         )
     submit_remote_job(
@@ -199,6 +205,8 @@ def run_training_job(
         seed=seed,
         accelerator=accelerator,
         devices=devices,
+        strategy=strategy,
+        precision=precision,
         deterministic_trainer=deterministic_trainer,
         job_name=job_name,
     )
@@ -512,6 +520,8 @@ def _execute_training_and_tuning_job_locally(
     accelerator: str,
     devices: int,
     deterministic_trainer: bool,
+    strategy: str,
+    precision: str,
 ):
     """Executes the training job locally.
 
@@ -529,6 +539,8 @@ def _execute_training_and_tuning_job_locally(
     config_space["seed"] = seed
     config_space["accelerator"] = accelerator
     config_space["devices"] = devices
+    config_space["strategy"] = strategy
+    config_space["precision"] = precision
     config_space["deterministic_trainer"] = deterministic_trainer
     if input_state_url is not None:
         config_space["input_state_url"] = input_state_url
@@ -550,7 +562,8 @@ def _execute_training_and_tuning_job_locally(
             f"Tuning hyperparameters with respect to {metric} ({mode}) for {max_time} seconds on "
             f"{n_workers} worker(s)."
         )
-    backend = LocalBackend(entry_point=training_script)
+
+    backend = LocalBackend(entry_point=training_script, num_gpus_per_trial=devices)
     if scheduler is None or not tune_hyperparameters:
         if scheduler is not None:
             warnings.warn(
