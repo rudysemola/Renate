@@ -17,6 +17,7 @@ from renate.models import RenateModule
 from renate.types import NestedTensors
 from renate.updaters.learner import ReplayLearner
 from renate.updaters.model_updater import SingleTrainingLoopUpdater
+from renate.utils.misc import maybe_populate_mask_and_ignore_logits
 from renate.utils.pytorch import cat_nested_tensors, get_length_nested_tensors
 
 
@@ -113,6 +114,10 @@ class OfflineExperienceReplayLearner(ReplayLearner):
             inputs = cat_nested_tensors((inputs, inputs_mem), 0)
             targets = torch.cat((targets, targets_mem), 0)
         outputs = self(inputs)
+
+        outputs, self._class_mask = maybe_populate_mask_and_ignore_logits(
+            self._mask_unused_classes, self._class_mask, self._classes_in_current_task, outputs
+        )
         loss = self._loss_fn(outputs, targets)
         if "memory" in batch:
             loss_current = loss[:batch_size_current].mean()
@@ -169,6 +174,7 @@ class OfflineExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
         gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
         gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         learner_kwargs = {
             "memory_size": memory_size,
@@ -206,4 +212,5 @@ class OfflineExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
             deterministic_trainer=deterministic_trainer,
             gradient_clip_algorithm=gradient_clip_algorithm,
             gradient_clip_val=gradient_clip_val,
+            mask_unused_classes=mask_unused_classes,
         )

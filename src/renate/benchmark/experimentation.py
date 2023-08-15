@@ -183,6 +183,10 @@ def execute_experiment_job(
         devices: Number of devices to use.
         deterministic_trainer: When true the Trainer adopts a deterministic behaviour also on GPU.
             In this function this parameter is set to True by default.
+        gradient_clip_val: The value at which to clip gradients. Passing None disables it.
+            `More details <https://lightning.ai/docs/pytorch/stable/common/trainer.html#init>`__
+        gradient_clip_algorithm: The gradient clipping algorithm to use. Can be norm or value.
+            `More details <https://lightning.ai/docs/pytorch/stable/common/trainer.html#init>`__
         job_name: Name of the experiment job.
         strategy: Name of the distributed training strategy to use.
             `More details <https://lightning.ai/docs/pytorch/stable/extensions/strategy.html>`__

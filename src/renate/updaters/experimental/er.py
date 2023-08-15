@@ -29,6 +29,7 @@ from renate.updaters.learner_components.reinitialization import (
     ShrinkAndPerturbReinitializationComponent,
 )
 from renate.updaters.model_updater import SingleTrainingLoopUpdater
+from renate.utils.misc import maybe_populate_mask_and_ignore_logits
 from renate.utils.pytorch import move_tensors_to_device
 
 
@@ -140,6 +141,13 @@ class BaseExperienceReplayLearner(ReplayLearner, abc.ABC):
                     batch_memory = self._sample_from_buffer(device=step_output["loss"].device)
                     (inputs_memory, _), metadata_memory = batch_memory
                     outputs_memory = self(inputs_memory)
+
+                    outputs_memory, self._class_mask = maybe_populate_mask_and_ignore_logits(
+                        self._mask_unused_classes,
+                        self._class_mask,
+                        self._classes_in_current_task,
+                        outputs_memory,
+                    )
                     intermediate_representation_memory = (
                         self._model.get_intermediate_representation()
                     )
@@ -554,6 +562,7 @@ class ExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
         gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
         gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         learner_kwargs = {
             "memory_size": memory_size,
@@ -594,6 +603,7 @@ class ExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
             deterministic_trainer=deterministic_trainer,
             gradient_clip_algorithm=gradient_clip_algorithm,
             gradient_clip_val=gradient_clip_val,
+            mask_unused_classes=mask_unused_classes,
         )
 
 
@@ -635,6 +645,7 @@ class DarkExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
         gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
         gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         learner_kwargs = {
             "memory_size": memory_size,
@@ -676,6 +687,7 @@ class DarkExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
             deterministic_trainer=deterministic_trainer,
             gradient_clip_algorithm=gradient_clip_algorithm,
             gradient_clip_val=gradient_clip_val,
+            mask_unused_classes=mask_unused_classes,
         )
 
 
@@ -718,6 +730,7 @@ class PooledOutputDistillationExperienceReplayModelUpdater(SingleTrainingLoopUpd
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
         gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
         gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         learner_kwargs = {
             "memory_size": memory_size,
@@ -760,6 +773,7 @@ class PooledOutputDistillationExperienceReplayModelUpdater(SingleTrainingLoopUpd
             deterministic_trainer=deterministic_trainer,
             gradient_clip_algorithm=gradient_clip_algorithm,
             gradient_clip_val=gradient_clip_val,
+            mask_unused_classes=mask_unused_classes,
         )
 
 
@@ -805,6 +819,7 @@ class CLSExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
         gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
         gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         learner_kwargs = {
             "memory_size": memory_size,
@@ -850,6 +865,7 @@ class CLSExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
             deterministic_trainer=deterministic_trainer,
             gradient_clip_algorithm=gradient_clip_algorithm,
             gradient_clip_val=gradient_clip_val,
+            mask_unused_classes=mask_unused_classes,
         )
 
 
@@ -901,6 +917,7 @@ class SuperExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
         gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
         gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         learner_kwargs = {
             "memory_size": memory_size,
@@ -952,4 +969,5 @@ class SuperExperienceReplayModelUpdater(SingleTrainingLoopUpdater):
             deterministic_trainer=deterministic_trainer,
             gradient_clip_algorithm=gradient_clip_algorithm,
             gradient_clip_val=gradient_clip_val,
+            mask_unused_classes=mask_unused_classes,
         )

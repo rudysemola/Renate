@@ -144,6 +144,10 @@ def run_training_job(
         precision: Type of bit precision to use.
             `More details <https://lightning.ai/docs/pytorch/stable/common/precision_basic.html>`__
         deterministic_trainer: When true the Trainer adopts a deterministic behaviour also on GPU.
+        gradient_clip_val: The value at which to clip gradients. Passing None disables it.
+            `More details <https://lightning.ai/docs/pytorch/stable/common/trainer.html#init>`__
+        gradient_clip_algorithm: The gradient clipping algorithm to use. Can be norm or value.
+            `More details <https://lightning.ai/docs/pytorch/stable/common/trainer.html#init>`__
         job_name: Prefix for the name of the SageMaker training job.
     """
     assert (
