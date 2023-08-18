@@ -71,9 +71,9 @@ class OfflineExperienceReplayLearner(ReplayLearner):
         self._num_points_current_task = len(train_dataset)
 
     def train_dataloader(self) -> DataLoader:
-        train_loader = super().train_dataloader()
-        loaders = {"current_task": train_loader}
+        loaders = {}
         if len(self._memory_buffer) > self._memory_batch_size:
+            loaders["current_task"] = super().train_dataloader()
             loaders["memory"] = DataLoader(
                 dataset=self._memory_buffer,
                 batch_size=self._memory_batch_size,
@@ -83,6 +83,11 @@ class OfflineExperienceReplayLearner(ReplayLearner):
                 pin_memory=True,
                 collate_fn=self._train_collate_fn,
             )
+        else:
+            batch_size = self._batch_size
+            self._batch_size += self._memory_batch_size
+            loaders["current_task"] = super().train_dataloader()
+            self._batch_size = batch_size
         return CombinedLoader(loaders, mode="max_size_cycle")
 
     def on_model_update_end(self) -> None:
