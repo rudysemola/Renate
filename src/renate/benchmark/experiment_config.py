@@ -21,6 +21,7 @@ from renate.benchmark.datasets.vision_datasets import (
 from renate.benchmark.datasets.wild_time_data import WildTimeDataModule
 from renate.benchmark.models import (
     MultiLayerPerceptron,
+    LearningToPromptTransformer,
     ResNet18,
     ResNet18CIFAR,
     ResNet34,
@@ -64,6 +65,7 @@ models = {
     "VisionTransformerL32": VisionTransformerL32,
     "VisionTransformerH14": VisionTransformerH14,
     "HuggingFaceTransformer": HuggingFaceSequenceClassificationTransformer,
+    "LearningToPromptTransformer": LearningToPromptTransformer,
 }
 
 
@@ -76,7 +78,7 @@ def model_fn(
     num_hidden_layers: Optional[int] = None,
     hidden_size: Optional[Tuple[int]] = None,
     dataset_name: Optional[str] = None,
-    pretrained_model_name: Optional[str] = None,
+    pretrained_model_name_or_path: Optional[str] = None,
 ) -> RenateModule:
     """Returns a model instance."""
     if model_name not in models:
@@ -98,7 +100,14 @@ def model_fn(
     elif model_name == "HuggingFaceTransformer":
         if updater == "Avalanche-iCaRL":
             raise ValueError("Transformers do not support iCaRL.")
-        model_kwargs["pretrained_model_name"] = pretrained_model_name
+        model_kwargs["pretrained_model_name_or_path"] = pretrained_model_name_or_path
+    elif (updater is not None) and ("LearningToPrompt" in updater):
+        if not model_name.startswith("LearningToPrompt"):
+            raise ValueError(
+                "L2P model updaters are designed to work only with "
+                f"LearningToPromptTransformer, but model name specified is {model_name}."
+            )
+        model_kwargs["pretrained_model_name_or_path"] = pretrained_model_name_or_path
     if model_state_url is None:
         model = model_class(**model_kwargs)
     else:
@@ -114,13 +123,13 @@ def get_data_module(
     dataset_name: str,
     val_size: float,
     seed: int,
-    pretrained_model_name: Optional[str],
+    pretrained_model_name_or_path: Optional[str],
     input_column: Optional[str],
     target_column: Optional[str],
 ) -> RenateDataModule:
     tokenizer = None
-    if pretrained_model_name is not None:
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name)
+    if pretrained_model_name_or_path is not None and "vit" not in pretrained_model_name_or_path:
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
     if dataset_name in TorchVisionDataModule.dataset_dict:
         return TorchVisionDataModule(
             data_path, dataset_name=dataset_name, val_size=val_size, seed=seed
@@ -136,7 +145,7 @@ def get_data_module(
             "val_size": val_size,
             "seed": seed,
         }
-        if pretrained_model_name is not None:
+        if pretrained_model_name_or_path is not None:
             data_module_kwargs["tokenizer"] = tokenizer
         return WildTimeDataModule(**data_module_kwargs)
     if dataset_name == "DomainNet":
@@ -277,7 +286,7 @@ def data_module_fn(
     randomness: Optional[float] = None,
     src_bucket: Optional[str] = None,
     src_object_name: Optional[str] = None,
-    pretrained_model_name: Optional[str] = None,
+    pretrained_model_name_or_path: Optional[str] = None,
     input_column: Optional[str] = None,
     target_column: Optional[str] = None,
     data_ids: Optional[List[Union[int, str]]] = None,
@@ -289,7 +298,7 @@ def data_module_fn(
         dataset_name=dataset_name,
         val_size=val_size,
         seed=seed,
-        pretrained_model_name=pretrained_model_name,
+        pretrained_model_name_or_path=pretrained_model_name_or_path,
         input_column=input_column,
         target_column=target_column,
     )
@@ -333,10 +342,8 @@ def train_transform(dataset_name: str, model_name: Optional[str] = None) -> Opti
     if dataset_name == "fmow":
         return default_transform(dataset_name)
     if dataset_name == "yearbook":
-        if (
-            model_name is not None
-            and model_name.startswith("VisionTransformer")
-            and model_name != "VisionTransformerCIFAR"
+        if (model_name is not None) and (
+            ("Transformer" in model_name) and (model_name != "VisionTransformerCIFAR")
         ):
             return transforms.Compose(
                 [
@@ -356,13 +363,25 @@ def train_transform(dataset_name: str, model_name: Optional[str] = None) -> Opti
     ] + wild_time_data.list_datasets() or dataset_name.startswith("hfd-"):
         return None
     if dataset_name in ["CIFAR10", "CIFAR100"]:
-        return transforms.Compose(
-            [
-                transforms.RandomCrop(32, padding=4),
-                transforms.RandomHorizontalFlip(),
-                _get_normalize_transform(dataset_name),
-            ]
-        )
+        if (model_name is not None) and (
+            ("Transformer" in model_name) and (model_name != "VisionTransformerCIFAR")
+        ):
+            return transforms.Compose(
+                [
+                    transforms.RandomResizedCrop(
+                        224, scale=(0.05, 1.0), ratio=(3.0 / 4.0, 4.0 / 3.0)
+                    ),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                ]
+            )
+        else:
+            return transforms.Compose(
+                [
+                    transforms.RandomCrop(32, padding=4),
+                    transforms.RandomHorizontalFlip(),
+                    _get_normalize_transform(dataset_name),
+                ]
+            )
     if dataset_name in ["CLEAR10", "CLEAR100", "DomainNet"]:
         return transforms.Compose(
             [
@@ -383,10 +402,8 @@ def test_transform(
     if dataset_name == "fmow":
         return default_transform(dataset_name)
     if dataset_name == "yearbook":
-        if (
-            model_name is not None
-            and model_name.startswith("VisionTransformer")
-            and model_name != "VisionTransformerCIFAR"
+        if (model_name is not None) and (
+            ("Transformer" in model_name) and (model_name != "VisionTransformerCIFAR")
         ):
             return transforms.Compose(
                 [
@@ -405,7 +422,17 @@ def test_transform(
     ] + wild_time_data.list_datasets() or dataset_name.startswith("hfd-"):
         return None
     if dataset_name in ["CIFAR10", "CIFAR100"]:
-        return _get_normalize_transform(dataset_name)
+        if (model_name is not None) and (
+            ("Transformer" in model_name) and (model_name != "VisionTransformerCIFAR")
+        ):
+            return transforms.Compose(
+                [
+                    transforms.Resize(256),
+                    transforms.CenterCrop(224),
+                ]
+            )
+        else:
+            return _get_normalize_transform(dataset_name)
     if dataset_name in ["CLEAR10", "CLEAR100", "DomainNet"]:
         return transforms.Compose(
             [
