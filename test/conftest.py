@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 import os
 import shutil
-from typing import Callable, Dict
+from typing import Callable, Dict, Literal
 
 import pytest
 import torch
 from pytorch_lightning.loggers import TensorBoardLogger
-
+from renate import defaults
 from renate.benchmark.models import (
     MultiLayerPerceptron,
     ResNet18,
@@ -30,16 +30,16 @@ from renate.updaters.avalanche.learner import (
     AvalancheLwFLearner,
     AvalancheReplayLearner,
 )
-from renate.updaters.avalanche.model_updater import (
-    AvalancheModelUpdater,
-)
+from renate.updaters.avalanche.model_updater import AvalancheModelUpdater
 from renate.updaters.experimental.er import ExperienceReplayLearner
 from renate.updaters.experimental.gdumb import GDumbLearner
 from renate.updaters.experimental.joint import JointLearner
+from renate.updaters.experimental.l2p import LearningToPromptLearner, LearningToPromptReplayLearner
 from renate.updaters.experimental.offline_er import OfflineExperienceReplayLearner
 from renate.updaters.experimental.repeated_distill import RepeatedDistillationLearner
 from renate.updaters.learner import Learner, ReplayLearner
 from renate.updaters.model_updater import SingleTrainingLoopUpdater
+from renate.utils.optimizer import create_partial_optimizer
 
 pytest_plugins = ["helpers_namespace"]
 
@@ -69,56 +69,31 @@ def pytest_collection_modifyitems(config, items):
 LEARNER_KWARGS = {
     ExperienceReplayLearner: {
         "memory_size": 30,
-        "memory_batch_size": 20,
-        "optimizer": "SGD",
-        "learning_rate": 2.5,
-        "momentum": 1.3,
-        "weight_decay": 0.5,
+        "batch_memory_frac": 0.4,
         "batch_size": 50,
         "seed": 1,
     },
-    Learner: {
-        "optimizer": "SGD",
-        "learning_rate": 1.23,
-        "momentum": 0.9,
-        "weight_decay": 0.005,
+    Learner: {"batch_size": 10, "seed": 42},
+    LearningToPromptLearner: {"batch_size": 10, "seed": 42, "prompt_sim_loss_weight": 1},
+    LearningToPromptReplayLearner: {
         "batch_size": 10,
         "seed": 42,
+        "prompt_sim_loss_weight": 1,
+        "loss_weight_new_data": 0.5,
+        "memory_size": 30,
+        "batch_memory_frac": 0.3,
     },
     GDumbLearner: {
-        "optimizer": "SGD",
-        "learning_rate": 1.23,
-        "momentum": 0.9,
-        "weight_decay": 0.005,
         "batch_size": 10,
         "seed": 42,
         "memory_size": 30,
     },
-    JointLearner: {
-        "optimizer": "SGD",
-        "learning_rate": 1.11,
-        "momentum": 0.4,
-        "weight_decay": 0.001,
-        "batch_size": 10,
-        "seed": 3,
-    },
-    RepeatedDistillationLearner: {
-        "optimizer": "SGD",
-        "learning_rate": 1.23,
-        "momentum": 0.9,
-        "weight_decay": 0.005,
-        "batch_size": 10,
-        "seed": 42,
-        "memory_size": 30,
-    },
+    JointLearner: {"batch_size": 10, "seed": 3},
+    RepeatedDistillationLearner: {"batch_size": 10, "seed": 42, "memory_size": 30},
     OfflineExperienceReplayLearner: {
         "memory_size": 30,
-        "memory_batch_size": 20,
+        "batch_memory_frac": 0.4,
         "loss_weight_new_data": 0.5,
-        "optimizer": "SGD",
-        "learning_rate": 2.5,
-        "momentum": 1.3,
-        "weight_decay": 0.5,
         "batch_size": 50,
         "seed": 1,
     },
@@ -126,94 +101,30 @@ LEARNER_KWARGS = {
 AVALANCHE_LEARNER_KWARGS = {
     AvalancheReplayLearner: {
         "memory_size": 30,
-        "memory_batch_size": 20,
-        "optimizer": "SGD",
-        "learning_rate": 2.5,
-        "momentum": 1.3,
-        "weight_decay": 0.5,
+        "batch_memory_frac": 0.4,
         "batch_size": 50,
         "seed": 1,
     },
     AvalancheEWCLearner: {
         "ewc_lambda": 0.1,
-        "optimizer": "SGD",
-        "learning_rate": 2.5,
-        "momentum": 1.3,
-        "weight_decay": 0.5,
         "batch_size": 50,
         "seed": 1,
     },
     AvalancheLwFLearner: {
         "alpha": 0.1,
         "temperature": 2,
-        "optimizer": "SGD",
-        "learning_rate": 2.5,
-        "momentum": 1.3,
-        "weight_decay": 0.5,
         "batch_size": 50,
         "seed": 1,
     },
     AvalancheICaRLLearner: {
         "memory_size": 30,
-        "memory_batch_size": 20,
-        "optimizer": "SGD",
-        "learning_rate": 2.5,
-        "momentum": 1.3,
-        "weight_decay": 0.5,
         "batch_size": 50,
         "seed": 1,
     },
 }
-LEARNER_HYPERPARAMETER_UPDATES = {
-    ExperienceReplayLearner: {
-        "optimizer": "Adam",
-        "learning_rate": 3.0,
-        "momentum": 0.5,
-        "weight_decay": 0.01,
-        "batch_size": 128,
-    },
-    Learner: {
-        "optimizer": "Adam",
-        "learning_rate": 3.0,
-        "weight_decay": 0.01,
-        "batch_size": 128,
-    },
-    GDumbLearner: {
-        "optimizer": "Adam",
-        "learning_rate": 2.0,
-        "momentum": 0.5,
-        "weight_decay": 0.03,
-        "batch_size": 128,
-        "memory_size": 50,
-    },
-    JointLearner: {
-        "optimizer": "Adam",
-        "learning_rate": 2.0,
-        "weight_decay": 0.01,
-        "batch_size": 128,
-    },
-    RepeatedDistillationLearner: {
-        "optimizer": "Adam",
-        "learning_rate": 2.0,
-        "weight_decay": 0.01,
-        "batch_size": 128,
-    },
-    OfflineExperienceReplayLearner: {
-        "optimizer": "Adam",
-        "learning_rate": 3.0,
-        "momentum": 0.5,
-        "weight_decay": 0.01,
-        "batch_size": 128,
-    },
-}
 AVALANCHE_LEARNER_HYPERPARAMETER_UPDATES = {
-    AvalancheEWCLearner: {
-        "ewc_lambda": 0.3,
-    },
-    AvalancheLwFLearner: {
-        "alpha": 0.2,
-        "temperature": 3,
-    },
+    AvalancheEWCLearner: {"ewc_lambda": 0.3},
+    AvalancheLwFLearner: {"alpha": 0.2, "temperature": 3},
     AvalancheICaRLLearner: {},
     AvalancheReplayLearner: {},
 }
@@ -225,6 +136,10 @@ LEARNERS_USING_SIMPLE_UPDATER = [
     GDumbLearner,
     JointLearner,
     OfflineExperienceReplayLearner,
+]
+L2P_LEARNERS = [
+    LearningToPromptLearner,
+    LearningToPromptReplayLearner,
 ]
 
 SAMPLE_CLASSIFICATION_RESULTS = {
@@ -252,6 +167,11 @@ def get_renate_module_mlp(
         hidden_size,
         add_icarl_class_means=add_icarl_class_means,
     )
+
+
+@pytest.helpers.register
+def get_loss_fn(reduction="none") -> torch.nn.Module:
+    return torch.nn.CrossEntropyLoss(reduction=reduction)
 
 
 @pytest.helpers.register
@@ -360,10 +280,11 @@ def get_renate_vision_module_and_data(
 @pytest.helpers.register
 def get_simple_updater(
     model,
+    partial_optimizer=None,
     input_state_folder=None,
     output_state_folder=None,
     learner_class=ExperienceReplayLearner,
-    learner_kwargs={"memory_size": 10},
+    learner_kwargs=None,
     max_epochs=5,
     train_transform=None,
     train_target_transform=None,
@@ -375,6 +296,8 @@ def get_simple_updater(
     metric=None,
     deterministic_trainer=False,
 ):
+    if learner_kwargs is None:
+        learner_kwargs = {"memory_size": 10}
     transforms_kwargs = {
         "train_transform": train_transform,
         "train_target_transform": train_target_transform,
@@ -386,6 +309,8 @@ def get_simple_updater(
         transforms_kwargs["buffer_target_transform"] = buffer_target_transform
     return SingleTrainingLoopUpdater(
         model=model,
+        loss_fn=get_loss_fn(),
+        optimizer=partial_optimizer or get_partial_optimizer(),
         learner_class=learner_class,
         learner_kwargs=learner_kwargs,
         input_state_folder=input_state_folder,
@@ -406,7 +331,7 @@ def get_avalanche_updater(
     input_state_folder=None,
     output_state_folder=None,
     learner_class=AvalancheReplayLearner,
-    learner_kwargs={"memory_size": 10},
+    learner_kwargs=None,
     max_epochs=5,
     train_transform=None,
     train_target_transform=None,
@@ -415,6 +340,8 @@ def get_avalanche_updater(
     early_stopping_enabled=False,
     metric=None,
 ):
+    if learner_kwargs is None:
+        learner_kwargs = {"memory_size": 10}
     transforms_kwargs = {
         "train_transform": train_transform,
         "train_target_transform": train_target_transform,
@@ -423,6 +350,8 @@ def get_avalanche_updater(
     }
     return AvalancheModelUpdater(
         model=model,
+        loss_fn=get_loss_fn("mean"),
+        optimizer=get_partial_optimizer(),
         learner_class=learner_class,
         learner_kwargs=learner_kwargs,
         input_state_folder=input_state_folder,
@@ -432,6 +361,18 @@ def get_avalanche_updater(
         early_stopping_enabled=early_stopping_enabled,
         metric=metric,
         **transforms_kwargs,
+    )
+
+
+@pytest.helpers.register
+def get_partial_optimizer(
+    optimizer: Literal["Adam", "SGD"] = defaults.OPTIMIZER,
+    lr: float = defaults.LEARNING_RATE,
+    momentum: float = defaults.MOMENTUM,
+    weight_decay: float = defaults.WEIGHT_DECAY,
+):
+    return create_partial_optimizer(
+        optimizer=optimizer, lr=lr, momentum=momentum, weight_decay=weight_decay
     )
 
 

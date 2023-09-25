@@ -12,11 +12,12 @@ from renate.benchmark.models.vision_transformer import VisionTransformer
 from renate.defaults import TASK_ID
 from renate.models import RenateModule
 from renate.models.renate_module import RenateWrapper
+from renate.utils.deepspeed import recover_object_from_tensor
 
 
 def test_failing_to_init_abs_class():
     with pytest.raises(TypeError):
-        RenateModule({"toy_hyperparam": 1.0}, torch.nn.CrossEntropyLoss())
+        RenateModule({"toy_hyperparam": 1.0}, pytest.helpers.get_loss_fn())
 
 
 @pytest.mark.parametrize(
@@ -36,8 +37,8 @@ def test_renate_model_save(tmpdir, model):
     state = torch.load(os.path.join(tmpdir, "test_model.pt"))
     os.remove(os.path.join(tmpdir, "test_model.pt"))
 
+    state["_extra_state"] = recover_object_from_tensor(state["_extra_state"])
     assert "constructor_arguments" in state["_extra_state"].keys()
-    assert "loss_fn" in state["_extra_state"].keys()
     assert "tasks_params_ids" in state["_extra_state"].keys()
 
 
@@ -85,7 +86,7 @@ def test_renate_model_singlehead_save_and_load(tmpdir, test_case, test_cls):
 
     y = torch.randint(3, 8, (5,))
     y_hat_pre_save = model(test_data)
-    loss_pre_save = model.loss_fn(y_hat_pre_save, y)
+    loss_pre_save = pytest.helpers.get_loss_fn("mean")(y_hat_pre_save, y)
 
     torch.save(model.state_dict(), os.path.join(tmpdir, "test_model.pt"))
     state = torch.load(os.path.join(tmpdir, "test_model.pt"))
@@ -94,7 +95,7 @@ def test_renate_model_singlehead_save_and_load(tmpdir, test_case, test_cls):
     model2 = test_cls.from_state_dict(state)
     model2.eval()
     y_hat_post_load = model2(test_data)
-    loss_post_load = model.loss_fn(y_hat_post_load, y)
+    loss_post_load = pytest.helpers.get_loss_fn("mean")(y_hat_post_load, y)
 
     assert torch.allclose(y_hat_pre_save, y_hat_post_load)
     assert torch.allclose(loss_post_load, loss_pre_save)
@@ -313,7 +314,7 @@ def test_renate_multihead_multi_param_update(test_case):
 )
 @torch.no_grad()
 def test_renate_wrapper_save_and_load(tmpdir, torch_model):
-    renate_module = RenateWrapper(torch_model, loss_fn=torch.nn.CrossEntropyLoss())
+    renate_module = RenateWrapper(torch_model)
     X = torch.randn(10, 3)
     output_before = renate_module(X)
     assert torch.equal(output_before, torch_model(X))
@@ -323,7 +324,7 @@ def test_renate_wrapper_save_and_load(tmpdir, torch_model):
     state = torch.load(os.path.join(tmpdir, "test_model.pt"))
     os.remove(os.path.join(tmpdir, "test_model.pt"))
 
-    renate_module = RenateWrapper(torch_model, loss_fn=torch.nn.CrossEntropyLoss())
+    renate_module = RenateWrapper(torch_model)
     renate_module.load_state_dict(state)
 
     output_after = renate_module(X)
@@ -331,7 +332,7 @@ def test_renate_wrapper_save_and_load(tmpdir, torch_model):
 
 
 def test_renate_wrapper_forbids_from_state_dict():
-    renate_module = RenateWrapper(torch.nn.Linear(1, 1), loss_fn=torch.nn.CrossEntropyLoss())
+    renate_module = RenateWrapper(torch.nn.Linear(1, 1))
     state_dict = renate_module.state_dict()
     del renate_module
     with pytest.raises(NotImplementedError):

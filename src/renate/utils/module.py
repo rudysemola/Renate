@@ -2,10 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib.util
 import sys
+import warnings
 from types import ModuleType
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import torch
 import torchmetrics
+from torch.nn import Parameter
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import _LRScheduler
 
 from renate import defaults
 from renate.benchmark.scenarios import Scenario
@@ -26,6 +31,8 @@ def evaluate_and_record_results(
     batch_size: int = defaults.BATCH_SIZE,
     accelerator: defaults.SUPPORTED_ACCELERATORS_TYPE = defaults.ACCELERATOR,
     devices: Optional[int] = None,
+    strategy: str = defaults.DISTRIBUTED_STRATEGY,
+    precision: str = defaults.PRECISION,
 ) -> Dict[str, List[List[float]]]:
     """A helper function that performs the evaluation on test data and records quantitative metrics
     in a dictionary.
@@ -44,13 +51,15 @@ def evaluate_and_record_results(
         devices: Devices used by PyTorch Lightning to train the model. If the devices flag is not
             defined, it will assume devices to be "auto" and fetch the `auto_device_count` from the
             `accelerator`.
+        strategy: Name of the distributed training strategy to use.
+            `More details <https://lightning.ai/docs/pytorch/stable/extensions/strategy.html>`__
+        precision: Type of bit precision to use.
+            `More details <https://lightning.ai/docs/pytorch/stable/common/precision_basic.html>`__
     """
-
-    data_module.setup()
-
     update_results = evaluate(
         model=model,
         test_dataset=data_module.test_data(),
+        test_collate_fn=data_module.test_collate_fn(),
         task_id=task_id,
         batch_size=batch_size,
         transform=transform,
@@ -58,11 +67,14 @@ def evaluate_and_record_results(
         logged_metrics=logged_metrics,
         accelerator=accelerator,
         devices=devices,
+        strategy=strategy,
+        precision=precision,
     )
     for key, value in update_results.items():
-        if key not in results:
-            results[key + metric_postfix] = []
-        results[key + metric_postfix].append(value)
+        result_key = f"{key}{metric_postfix}"
+        if result_key not in results:
+            results[result_key] = []
+        results[result_key].append(value)
     return results
 
 
@@ -76,11 +88,51 @@ def get_data_module(config_module: ModuleType, **kwargs: Any) -> RenateDataModul
     return getattr(config_module, "data_module_fn")(**kwargs)
 
 
-def get_metrics(config_module: ModuleType) -> Dict[str, torchmetrics.Metric]:
+def _convert_loss(loss_fn: torch.nn.Module):
+    """Changes PyTorch loss such that it uses no reduction."""
+    if hasattr(loss_fn, "reduction") and loss_fn.reduction != "none":
+        warnings.warn(
+            "Renate assumes that your loss function returns a loss value for each data point."
+            f"Your loss function uses reduction={loss_fn.reduction}, changing to `none`."
+        )
+        loss_fn.reduction = "none"
+
+
+def get_loss_fn(config_module: ModuleType, convert: bool, **kwargs: Any) -> torch.nn.Module:
+    """Creates and returns the loss function from config"""
+    loss_fn = getattr(config_module, "loss_fn")(**kwargs)
+    if convert:
+        _convert_loss(loss_fn)
+    return loss_fn
+
+
+def get_optimizer(
+    config_module: ModuleType, **kwargs: Any
+) -> Optional[Callable[[List[Parameter]], Optimizer]]:
+    """Creates partial optimizer object from config."""
+    optimizer_fn_name = "optimizer_fn"
+    if optimizer_fn_name in vars(config_module):
+        return getattr(config_module, optimizer_fn_name)(**kwargs)
+
+
+def get_learning_rate_scheduler(
+    config_module: ModuleType, **kwargs: Any
+) -> Optional[
+    Tuple[Callable[[Optimizer], _LRScheduler], defaults.SUPPORTED_LR_SCHEDULER_INTERVAL_TYPE]
+]:
+    """Creates partial learning rate scheduler object from config."""
+    lr_scheduler_fn_name = "lr_scheduler_fn"
+    if lr_scheduler_fn_name in vars(config_module):
+        return getattr(config_module, lr_scheduler_fn_name)(**kwargs)
+
+
+def get_metrics(
+    config_module: ModuleType, **kwargs: Any
+) -> Optional[Dict[str, torchmetrics.Metric]]:
     """Creates and returns a dictionary of metrics."""
     metrics_fn_name = "metrics_fn"
     if metrics_fn_name in vars(config_module):
-        return getattr(config_module, metrics_fn_name)()
+        return getattr(config_module, metrics_fn_name)(**kwargs)
 
 
 def get_and_prepare_data_module(config_module: ModuleType, **kwargs: Any) -> RenateDataModule:

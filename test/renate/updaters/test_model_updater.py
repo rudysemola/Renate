@@ -5,6 +5,7 @@ from copy import deepcopy
 
 import pytest
 import torch
+from pytorch_lightning.utilities.seed import seed_everything
 from torchvision.transforms import Lambda
 
 from conftest import LEARNERS_USING_SIMPLE_UPDATER, LEARNER_KWARGS, check_learner_transforms
@@ -33,9 +34,33 @@ def test_simple_model_updater(tmpdir, provide_folder):
     assert not torch.allclose(y_hat_before_train, y_hat_after_train)
 
 
+def test_model_passed_is_used_as_is(tmpdir):
+    """Makes sure that the model passed to the updater is not overwritten by anything in the
+    checkpoint"""
+    model, train_dataset, _ = pytest.helpers.get_renate_module_mlp_and_data(
+        num_inputs=10,
+        num_outputs=10,
+        hidden_size=32,
+        num_hidden_layers=3,
+        train_num_samples=10,
+        test_num_samples=5,
+    )
+    model2 = deepcopy(model)
+    model_updater = pytest.helpers.get_simple_updater(model, output_state_folder=tmpdir)
+    model_updater.update(train_dataset, task_id=defaults.TASK_ID)
+
+    expected_model = deepcopy(model2)
+    model_updater = pytest.helpers.get_simple_updater(model2, input_state_folder=tmpdir)
+    for p1, p2 in zip(
+        expected_model.parameters(),
+        model_updater._learner._model.parameters(),
+    ):
+        assert torch.allclose(p1, p2)
+
+
 def test_deterministic_updater():
-    # The behavior is always deterministic on CPU but it can become non-deterministic on GPU
-    # When run on CPU this test never fails so it is only useful when tests are run on GPU
+    # The behavior is always deterministic on CPU, but it can become non-deterministic on GPU
+    # When run on CPU this test never fails, so it is only useful when tests are run on GPU
     model1, train_dataset, test_data = pytest.helpers.get_renate_module_mlp_and_data(
         num_inputs=10,
         num_outputs=10,
@@ -68,11 +93,12 @@ def test_deterministic_updater():
 
 @pytest.mark.parametrize("early_stopping_enabled", [True, False])
 @pytest.mark.parametrize("use_val", [True, False])
-@pytest.mark.parametrize("metric_monitored", [None, "val_accuracy"])
+@pytest.mark.parametrize("metric_monitored", [None, "val_loss"])
 @pytest.mark.parametrize("updater_type", ["DMC", "SimpleUpdater"])
 def test_model_updater_with_early_stopping(
     use_val, early_stopping_enabled, metric_monitored, updater_type
 ):
+    seed_everything(0)
     model, train_dataset, val_dataset = pytest.helpers.get_renate_module_mlp_and_data(
         num_inputs=10,
         num_outputs=10,
@@ -88,10 +114,14 @@ def test_model_updater_with_early_stopping(
         if updater_type == "DMC":
             model_updater = RepeatedDistillationModelUpdater(
                 model=model,
+                loss_fn=pytest.helpers.get_loss_fn(),
+                optimizer=pytest.helpers.get_partial_optimizer(lr=0.3),
                 memory_size=50,
                 max_epochs=max_epochs,
                 early_stopping_enabled=early_stopping_enabled,
                 metric=metric_monitored,
+                accelerator="cpu",
+                devices=1,
             )
         else:
             model_updater = pytest.helpers.get_simple_updater(
@@ -204,6 +234,23 @@ def test_transforms_passed_to_simple_model_updater_will_be_used_by_learner(tmpdi
     check_learner_transforms(model_updater._learner, transforms_kwargs)
     model = model_updater.update(train_dataset, task_id=defaults.TASK_ID)
     model_updater = pytest.helpers.get_simple_updater(
-        model, input_state_folder=state_url, learner_class=learner_class, **transforms_kwargs
+        model,
+        input_state_folder=state_url,
+        learner_class=learner_class,
+        **transforms_kwargs,
+        learner_kwargs=LEARNER_KWARGS[learner_class],
     )
     check_learner_transforms(model_updater._learner, transforms_kwargs)
+
+
+@pytest.mark.xfail(raises=(KeyError, TypeError))
+@pytest.mark.parametrize("learner", LEARNERS_USING_SIMPLE_UPDATER)
+def test_learner_fails_without_loss_fn(learner):
+    """This test checks that the updater crashes when it is supposed to.
+    This is to check for loss_fn and other misc arguments."""
+    _ = pytest.helpers.get_simple_updater(
+        model=torch.nn.Linear(1, 1),
+        learner_class=learner,
+        learner_kwargs={"learning_rate": 0.0},
+        max_epochs=1,
+    )

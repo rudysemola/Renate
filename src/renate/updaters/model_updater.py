@@ -11,10 +11,18 @@ import torchmetrics
 from pytorch_lightning import Callback, LightningModule, Trainer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_lightning.loggers.logger import Logger
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from syne_tune import Reporter
+from torch.nn import Parameter
+from torch.optim import Optimizer
+from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset
 
 from renate import defaults
+from renate.utils.deepspeed import convert_zero_checkpoint_to_fp32_state_dict
+from renate.utils.distributed_strategies import create_strategy
+from renate.utils.file import unlink_file_or_folder
+from renate.utils.misc import int_or_str
 from .learner import Learner, ReplayLearner
 from ..models import RenateModule
 
@@ -33,6 +41,7 @@ class SyneTuneCallback(Callback):
         self._report = Reporter()
         self._val_enabled = val_enabled
 
+    @rank_zero_only
     def _log(self, trainer: Trainer, training: bool) -> None:
         """Report the current epoch's results to Syne Tune.
 
@@ -96,7 +105,7 @@ class RenateModelCheckpoint(ModelCheckpoint):
         self._output_state_folder = output_state_folder
         self.CHECKPOINT_NAME_LAST = learner_checkpoint_filename
         # Delete old checkpoint if exists
-        Path(defaults.learner_state_file(self._output_state_folder)).unlink(missing_ok=True)
+        unlink_file_or_folder(Path(defaults.learner_state_file(self._output_state_folder)))
         # FIXME: Hack to make sure Syne Tune is called after checkpointing.
         # Details: https://github.com/Lightning-AI/lightning/issues/15026
         # If fixed, remove on_train_epoch_end, on_validation_epoch_end, val_enabled, remove line
@@ -105,11 +114,6 @@ class RenateModelCheckpoint(ModelCheckpoint):
             self._syne_tune_callback = SyneTuneCallback(val_enabled)
         else:
             self._syne_tune_callback = None
-
-    def _save_checkpoint(self, trainer: Trainer, filepath: str) -> None:
-        Path(self.dirpath).mkdir(parents=True, exist_ok=True)
-        torch.save(self._model.state_dict(), defaults.model_file(self.dirpath))
-        super()._save_checkpoint(trainer=trainer, filepath=filepath)
 
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
         super().on_train_epoch_end(trainer=trainer, pl_module=pl_module)
@@ -125,14 +129,71 @@ class RenateModelCheckpoint(ModelCheckpoint):
         # Reload best state.
         learner_state_path = Path(defaults.learner_state_file(self._output_state_folder))
         if learner_state_path.exists():
-            self._model.load_state_dict(torch.load(defaults.model_file(self.dirpath)))
-            pl_module.load_state_dict(self._model, torch.load(learner_state_path)["state_dict"])
+            # There are three obvious steps that are handled by lightning if
+            # we use the load_from_checkpoint mechanism. Here we do those manually.
+            # See for reference
+            # https://github.com/Lightning-AI/lightning/blob/1.8.6/src/pytorch_lightning/core/saving.py#L225
+            # 1. Load the state_dict from the checkpoint file.
+            # 2. Call the on_load_checkpoint (which is a callback)
+            # 3. Load the state_dict into the model. Note the strategy.load_model_state_dict call.
+            loaded_state = trainer.strategy.load_checkpoint(learner_state_path)
+            pl_module.on_load_checkpoint(loaded_state)
+            trainer.strategy.load_model_state_dict(loaded_state)
+
         # Finalize model update.
         pl_module.on_model_update_end()
         # Save permanently.
-        pl_module.save(self._output_state_folder)
+        if trainer.is_global_zero:
+            # Save the buffer only on rank zero.
+            pl_module.save(self._output_state_folder)
         # Overwrite checkpoint.
-        self._save_checkpoint(trainer, learner_state_path)
+        self._save_checkpoint(trainer, str(learner_state_path))
+
+    def teardown(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
+        """Implements the separation of learner and model at the end of training.
+
+        There are two cases two handle.
+
+        1. If deepspeed is being used:
+        The learner_state_path (which the checkpointing func) uses is a directory and not a file.
+        This directory has sharded state_dicts (of model and optimizers), depending on which
+        deepspeed stage is used. There are three steps here
+
+        a. combine all the shards into one big state dict.
+        b. The learner_state_path is a dir (learner.ckpt/). This needs to be deleted first.
+        c. Write the combined state_dict as the learner.ckpt file as a single file.
+        d. Extract the state_dict element from the learner and save that as the model.ckpt.
+
+        2. If not deepspeed (say DDP or single device):
+        The steps are much simpler.
+
+        a. Load the learner.ckpt and extract the state_dict element.
+        b. | Sanitize the extracted state_dict. Learner has the model in a _model attribute.
+           | So strip the first "_model." from the keys of the state_dict.
+        c. Save the sanitized model to model.ckpt.
+
+        Case 2 is needs to be done even for Case 1 (step d). So teardown is a recursive call in
+        Case 1 which automatically goes to Case 2 as learner.ckpt is file now.
+        """
+
+        if trainer.is_global_zero and (stage == "fit"):
+            learner_state_path = Path(defaults.learner_state_file(self._output_state_folder))
+            if learner_state_path.exists() and learner_state_path.is_dir():
+                # Deepspeed zero saves everything as folders.
+                combined_state_dict = convert_zero_checkpoint_to_fp32_state_dict(learner_state_path)
+                unlink_file_or_folder(learner_state_path)
+                torch.save(combined_state_dict, learner_state_path)
+                self.teardown(trainer, pl_module, stage)
+            elif learner_state_path.exists() and learner_state_path.is_file():
+                # This a normal file. We strip the model of any wrappers and save that.
+                learner_state = torch.load(learner_state_path)
+                out_sd = {
+                    k.replace("_model.", "", 1): v for k, v in learner_state["state_dict"].items()
+                }  # Replace only 1 instance because we have to load it into RenateModule.
+                torch.save(out_sd, defaults.model_file(self.dirpath))
+                # Remove model from learner checkpoint
+                learner_state["state_dict"] = {}
+                torch.save(learner_state, learner_state_path)
 
     def on_exception(
         self, trainer: Trainer, pl_module: LightningModule, exception: BaseException
@@ -155,7 +216,9 @@ class ModelUpdater(abc.ABC):
             state available) or replace current arguments of the learner.
         input_state_folder: Folder used by Renate to store files for current state.
         output_state_folder: Folder used by Renate to store files for next state.
-        max_epochs: The maximum number of epochs used to train the model.
+        max_epochs: The maximum number of epochs used to train the model. For comparability between
+            methods, epochs are interpreted as "finetuning-equivalent". That is, one epoch is
+            defined as `len(current_task_dataset) / batch_size` update steps.
         train_transform: The transformation applied during training.
         train_target_transform: The target transformation applied during testing.
         test_transform: The transformation at test time.
@@ -178,16 +241,23 @@ class ModelUpdater(abc.ABC):
             The value is passed to the trainer as described
             `here <https://pytorch-lightning.readthedocs.io/en/stable/common\
             /trainer.html#reproducibility>`_.
+        gradient_clip_val: Gradient clipping value used in PyTorch Lightning. Defaults to not
+            clipping by using a value of None.
+        gradient_clip_algorithm: Method to clip gradients (norm or value) used in PyTorch Lightning.
     """
 
     def __init__(
         self,
         model: RenateModule,
+        loss_fn: torch.nn.Module,
+        optimizer: Callable[[List[Parameter]], Optimizer],
         learner_class: Type[Learner],
         learner_kwargs: Optional[Dict[str, Any]] = None,
         input_state_folder: Optional[str] = None,
         output_state_folder: Optional[str] = None,
         max_epochs: int = defaults.MAX_EPOCHS,
+        learning_rate_scheduler: Optional[Optional[Callable[[Optimizer], _LRScheduler]]] = None,
+        learning_rate_scheduler_interval: defaults.SUPPORTED_LR_SCHEDULER_INTERVAL_TYPE = defaults.LR_SCHEDULER_INTERVAL,  # noqa: E501
         train_transform: Optional[Callable] = None,
         train_target_transform: Optional[Callable] = None,
         test_transform: Optional[Callable] = None,
@@ -201,9 +271,22 @@ class ModelUpdater(abc.ABC):
         logger: Logger = defaults.LOGGER(**defaults.LOGGER_KWARGS),
         accelerator: defaults.SUPPORTED_ACCELERATORS_TYPE = defaults.ACCELERATOR,
         devices: Optional[int] = None,
+        strategy: Optional[str] = defaults.DISTRIBUTED_STRATEGY,
+        precision: str = defaults.PRECISION,
         deterministic_trainer: bool = defaults.DETERMINISTIC_TRAINER,
+        gradient_clip_val: Optional[float] = defaults.GRADIENT_CLIP_VAL,
+        gradient_clip_algorithm: Optional[str] = defaults.GRADIENT_CLIP_ALGORITHM,
+        mask_unused_classes: bool = defaults.MASK_UNUSED_CLASSES,
     ):
         self._learner_kwargs = learner_kwargs or {}
+        self._learner_kwargs["loss_fn"] = loss_fn
+        self._learner_kwargs["optimizer"] = optimizer
+        self._learner_kwargs["mask_unused_classes"] = mask_unused_classes
+        if learning_rate_scheduler is not None:
+            self._learner_kwargs["learning_rate_scheduler"] = learning_rate_scheduler
+            self._learner_kwargs[
+                "learning_rate_scheduler_interval"
+            ] = learning_rate_scheduler_interval
         self._model = model
         self._learner_state_file: Optional[str] = None
         if input_state_folder is not None:
@@ -256,17 +339,23 @@ class ModelUpdater(abc.ABC):
             )
         self._accelerator = accelerator
         self._devices = devices
+        self._strategy = strategy
+        self._precision = int_or_str(precision)
         self._learner = self._load_learner(learner_class, self._learner_kwargs)
         assert self._learner.is_logged_metric(metric), f"Target metric `{metric}` is not logged."
         self._logger = logger
         self._num_epochs_trained = 0
         self._deterministic_trainer = deterministic_trainer
+        self._gradient_clip_algorithm = gradient_clip_algorithm
+        self._gradient_clip_val = gradient_clip_val
 
     @abc.abstractmethod
     def update(
         self,
         train_dataset: Dataset,
         val_dataset: Optional[Dataset] = None,
+        train_dataset_collate_fn: Optional[Callable] = None,
+        val_dataset_collate_fn: Optional[Callable] = None,
         task_id: Optional[str] = None,
     ) -> None:
         """Updates the model using the data passed as input.
@@ -274,6 +363,10 @@ class ModelUpdater(abc.ABC):
         Args:
             train_dataset: The training data.
             val_dataset: The validation data.
+            train_dataset_collate_fn: collate_fn used to merge a list of samples to form a
+                mini-batch of Tensors for the training data.
+            val_dataset_collate_fn: collate_fn used to merge a list of samples to form a
+                mini-batch of Tensors for the validation data.
             task_id: The task id.
         """
 
@@ -290,12 +383,15 @@ class ModelUpdater(abc.ABC):
                 logged_metrics=self._logged_metrics,
                 **self._transforms_kwargs,
             )
-        learner = learner_class.__new__(learner_class)
-        learner.load_state_dict(self._model, torch.load(self._learner_state_file)["state_dict"])
+        learner = learner_class.load_from_checkpoint(
+            self._learner_state_file,
+            model=self._model,
+            logged_metrics=self._logged_metrics,
+            strict=False,
+            **self._transforms_kwargs,
+            **learner_kwargs,
+        )
         learner.load(self._input_state_folder)
-        learner.set_transforms(**self._transforms_kwargs)
-        learner.set_logged_metrics(self._logged_metrics)
-        learner.update_hyperparameters(learner_kwargs)
         return learner
 
     def _fit_learner(
@@ -326,14 +422,23 @@ class ModelUpdater(abc.ABC):
                     "be ignored."
                 )
 
+        strategy = create_strategy(self._devices, self._strategy)
+        # Finetuning-equivalent epochs.
+        num_batches = len(learner._train_dataset) // learner._batch_size
+        num_batches += min(len(learner._train_dataset) % learner._batch_size, 1)
         trainer = Trainer(
             accelerator=self._accelerator,
             devices=self._devices,
             max_epochs=self._max_epochs,
+            limit_train_batches=num_batches,
             callbacks=callbacks,
             logger=self._logger,
             enable_progress_bar=False,
             deterministic=self._deterministic_trainer,
+            strategy=strategy,
+            precision=self._precision,
+            gradient_clip_val=self._gradient_clip_val,
+            gradient_clip_algorithm=self._gradient_clip_algorithm,
         )
         trainer.fit(learner)
         self._num_epochs_trained = trainer.current_epoch
@@ -346,6 +451,8 @@ class SingleTrainingLoopUpdater(ModelUpdater):
         self,
         train_dataset: Dataset,
         val_dataset: Optional[Dataset] = None,
+        train_dataset_collate_fn: Optional[Callable] = None,
+        val_dataset_collate_fn: Optional[Callable] = None,
         task_id: Optional[str] = None,
     ) -> RenateModule:
         """Updates the model using the data passed as input.
@@ -353,8 +460,18 @@ class SingleTrainingLoopUpdater(ModelUpdater):
         Args:
             train_dataset: The training data.
             val_dataset: The validation data.
+            train_dataset_collate_fn: collate_fn used to merge a list of samples to form a
+                mini-batch of Tensors for the training data.
+            val_dataset_collate_fn: collate_fn used to merge a list of samples to form a
+                mini-batch of Tensors for the validation data.
             task_id: The task id.
         """
-        self._learner.on_model_update_start(train_dataset, val_dataset, task_id)
+        self._learner.on_model_update_start(
+            train_dataset=train_dataset,
+            val_dataset=val_dataset,
+            train_dataset_collate_fn=train_dataset_collate_fn,
+            val_dataset_collate_fn=val_dataset_collate_fn,
+            task_id=task_id,
+        )
         self._fit_learner(self._learner)
         return self._model
