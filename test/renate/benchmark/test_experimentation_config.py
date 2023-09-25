@@ -34,6 +34,7 @@ from renate.benchmark.scenarios import (
 from renate.models.prediction_strategies import ICaRLClassificationStrategy
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize(
     "model_name,expected_model_class",
     [(model_name, model_class) for model_name, model_class in models.items()],
@@ -344,6 +345,7 @@ def test_lr_scheduler_fn_fails_for_unknown_scheduler():
         lr_scheduler_fn(unknown_lr_scheduler)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("model_name", [model_name for model_name in models])
 @pytest.mark.parametrize("updater", ("ER", "Avalanche-iCaRL"))
 def test_prediction_strategy_is_correctly_set(model_name, updater):
