@@ -52,6 +52,8 @@ from renate.data.data_module import RenateDataModule
 from renate.models import RenateModule
 from renate.models.prediction_strategies import ICaRLClassificationStrategy
 
+from renate.benchmark.models.spromptmodel import SPromptTransformer
+
 models = {
     "MultiLayerPerceptron": MultiLayerPerceptron,
     "ResNet18CIFAR": ResNet18CIFAR,
@@ -68,6 +70,7 @@ models = {
     "VisionTransformerH14": VisionTransformerH14,
     "HuggingFaceTransformer": HuggingFaceSequenceClassificationTransformer,
     "LearningToPromptTransformer": LearningToPromptTransformer,
+    "SPromptTransformer": SPromptTransformer,
 }
 
 
@@ -81,6 +84,9 @@ def model_fn(
     hidden_size: Optional[Tuple[int]] = None,
     dataset_name: Optional[str] = None,
     pretrained_model_name_or_path: Optional[str] = None,
+    prompt_size: int = 10,
+    clusters_per_task: int = 5,
+    per_task_classifier: bool = True,
 ) -> RenateModule:
     """Returns a model instance."""
     if model_name not in models:
@@ -110,6 +116,16 @@ def model_fn(
                 f"LearningToPromptTransformer, but model name specified is {model_name}."
             )
         model_kwargs["pretrained_model_name_or_path"] = pretrained_model_name_or_path
+    elif (updater is not None) and ("SPeft" in updater):
+        if not model_name.startswith("SPrompt"):
+            raise ValueError(
+                "SPrompt model updater is designed to work only with "
+                f"SPromptTransformer, but model name specified is {model_name}."
+            )
+        model_kwargs["pretrained_model_name_or_path"] = pretrained_model_name_or_path
+        model_kwargs["prompt_size"] = prompt_size
+        model_kwargs["clusters_per_task"] = clusters_per_task
+        model_kwargs["per_task_classifier"] = per_task_classifier
     if model_state_url is None:
         model = model_class(**model_kwargs)
     else:
