@@ -28,6 +28,7 @@ from renate.updaters.experimental.l2p import (
 )
 from renate.updaters.experimental.offline_er import OfflineExperienceReplayModelUpdater
 from renate.updaters.experimental.repeated_distill import RepeatedDistillationModelUpdater
+from renate.updaters.experimental.speft import SPeftModelUpdater
 from renate.updaters.model_updater import ModelUpdater
 
 REQUIRED_ARGS_GROUP = "Required Arguments"
@@ -70,6 +71,8 @@ def get_updater_and_learner_kwargs(
     elif args.updater == "LearningToPromptReplay":
         learner_args = learner_args + ["prompt_sim_loss_weight", "memory_size", "memory_batch_size"]
         updater_class = LearningToPromptReplayModelUpdater
+    elif args.updater == "SPeft":
+        updater_class = SPeftModelUpdater
     elif args.updater == "DER":
         learner_args = base_er_args + ["alpha", "beta"]
         updater_class = DarkExperienceReplayModelUpdater
@@ -486,6 +489,10 @@ def _add_l2p_arguments(arguments: Dict[str, Dict[str, Any]]) -> None:
 def _add_l2preplay_arguments(arguments: Dict[str, Dict[str, Any]]) -> None:
     _add_l2p_arguments(arguments)
     _add_offline_er_arguments(arguments)
+
+
+def _add_speft_arguments(arguments: Dict[str, Dict[str, Any]]) -> None:
+    pass
 
 
 def _add_gdumb_arguments(arguments: Dict[str, Dict[str, Any]]) -> None:
@@ -973,6 +980,7 @@ parse_by_updater = {
     "ER": _add_experience_replay_arguments,
     "LearningToPrompt": _add_l2p_arguments,
     "LearningToPromptReplay": _add_l2preplay_arguments,
+    "SPeft": _add_speft_arguments,
     "DER": _add_dark_experience_replay_arguments,
     "POD-ER": _add_pod_experience_replay_arguments,
     "CLS-ER": _add_cls_experience_replay_arguments,

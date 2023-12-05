@@ -3,8 +3,10 @@
 import json
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+import pickle
+from typing import List, Literal, Optional, Tuple, Union
 
+import gdown
 import pandas as pd
 import torch
 import torchvision
@@ -14,7 +16,13 @@ from renate import defaults
 from renate.benchmark.datasets.base import DataIncrementalDataModule
 from renate.data import ImageDataset
 from renate.data.data_module import RenateDataModule
-from renate.utils.file import download_and_unzip_file, download_file, download_folder_from_s3
+from renate.utils.file import (
+    download_and_unzip_file,
+    download_file,
+    download_file_from_s3,
+    download_folder_from_s3,
+    extract_file,
+)
 
 
 class TinyImageNetDataModule(RenateDataModule):
@@ -359,6 +367,8 @@ class DomainNetDataModule(DataIncrementalDataModule):
     def prepare_data(self) -> None:
         """Download DomainNet dataset for given domain."""
         file_name = f"{self.data_id}.zip"
+        # update dataset name:
+        self._dataset_name = self.data_id
         url = "http://csr.bu.edu/ftp/visda/2019/multi-source/"
         if self.data_id in ["clipart", "painting"]:
             url = os.path.join(url, "groundtruth")
@@ -402,3 +412,169 @@ class DomainNetDataModule(DataIncrementalDataModule):
         data = list(df.path.apply(lambda x: os.path.join(path, x)))
         labels = list(df.label)
         return data, labels
+
+
+class CDDBDataModule(DataIncrementalDataModule):
+    md5s = {
+        "CDDB.tar.zip": "823b6496270ba03019dbd6af60cbcb6b",
+    }
+
+    domains = ["gaugan", "biggan", "wild", "whichfaceisreal", "san"]
+    dataset_stats = {
+        "CDDB": dict(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    }
+    google_drive_id = "1NgB8ytBMFBFwyXJQvdVT_yek1EaaEHrg"
+
+    def __init__(
+        self,
+        data_path: Union[Path, str],
+        src_bucket: Optional[str] = None,
+        src_object_name: Optional[str] = None,
+        domain: str = "gaugan",
+        val_size: float = defaults.VALIDATION_SIZE,
+        seed: int = defaults.SEED,
+    ):
+        assert domain in self.domains
+        super().__init__(
+            data_path=data_path,
+            data_id=domain.lower(),
+            src_bucket=src_bucket,
+            src_object_name=src_object_name,
+            val_size=val_size,
+            seed=seed,
+        )
+
+    def prepare_data(self) -> None:
+        """Download DomainNet dataset for given domain."""
+        file_name = "CDDB.tar.zip"
+        self._dataset_name = ""
+        if not self._verify_file(file_name):
+            if self._src_bucket is None:
+                gdown.download(
+                    output=self._data_path,
+                    quiet=False,
+                    url=f"https://drive.google.com/u/0/uc?id={self.google_drive_id}&export=download&confirm=pbef",  # noqa: E501
+                )
+            else:
+                download_file_from_s3(
+                    dst=os.path.join(self._data_path, file_name),
+                    src_bucket=self._src_bucket,
+                    src_object_name=self._src_object_name,
+                )
+            extract_file(data_path=self._data_path, file_name="CDDB.tar.zip", dataset_name="")
+            extract_file(data_path=self._data_path, file_name="CDDB.tar", dataset_name="")
+
+    def setup(self) -> None:
+        self._dataset_name = "CDDB"  # we need this because zip+tar
+        train_path = self._get_filepaths_and_labels("train")
+        train_data = torchvision.datasets.ImageFolder(train_path)
+        self._train_data, self._val_data = self._split_train_val_data(train_data)
+        test_path = self._get_filepaths_and_labels("val")
+        self._test_data = torchvision.datasets.ImageFolder(test_path)
+
+    def _get_filepaths_and_labels(self, split: str) -> Tuple[List[str], List[int]]:
+        return os.path.join(self._data_path, self._dataset_name, self.data_id, split)
+
+
+class CORE50DataModule(DataIncrementalDataModule):
+    """Datamodule that process the CORe50 dataset.
+
+    It enables to download all the scenarios and with respect to 0th run (as per S-Prompts),
+    set by `scenario` and `data_id` respectively.
+
+    Source: https://vlomonaco.github.io/core50/.
+    Adapted from: https://github.com/vlomonaco/core50/blob/master/scripts/python/data_loader.py
+
+    Args:
+        data_path: The path to the folder containing the dataset files.
+        src_bucket: The name of the s3 bucket. If not provided, downloads the data from
+            original source.
+        src_object_name: The folder path in the s3 bucket.
+        scenario: One of ``ni``, ``nc``, ``nic``, ``nicv2_79``, ``nicv2_196`` and ``nicv2_391``.
+            This is different from the usage of scenario elsewhere in Renate.
+        data_id: One of the several data batches dependent on scenario
+    """
+
+    md5s = {
+        "core50_128x128.zip": "745f3373fed08d69343f1058ee559e13",
+        "paths.pkl": "b568f86998849184df3ec3465290f1b0",
+        "LUP.pkl": "33afc26faa460aca98739137fdfa606e",
+        "labels.pkl": "281c95774306a2196f4505f22fd60ab1",
+    }
+    dataset_stats = {
+        "Core50": dict(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    }
+
+    def __init__(
+        self,
+        data_path: Union[Path, str],
+        src_bucket: Optional[str] = None,
+        src_object_name: Optional[str] = None,
+        scenario: Literal["ni", "nc", "nic", "nicv2_79", "nicv2_196", "nicv2_391"] = "ni",
+        data_id: int = 0,
+        val_size: float = defaults.VALIDATION_SIZE,
+        seed: int = defaults.SEED,
+    ) -> None:
+        super().__init__(
+            data_path=data_path,
+            src_bucket=src_bucket,
+            src_object_name=src_object_name,
+            data_id=data_id,
+            val_size=val_size,
+            seed=seed,
+        )
+        self._dataset_name = "core50"
+        self._image_source = "core50_128x128"
+        self._scenario = scenario
+        self._complete_data_path = os.path.join(
+            self._data_path, self._dataset_name, self._image_source
+        )
+
+    def prepare_data(self) -> None:
+        """Download the CORE50 dataset and supporting files and set paths."""
+        if not self._verify_file(f"{self._image_source}.zip"):
+            download_and_unzip_file(
+                self._dataset_name,
+                self._data_path,
+                self._src_bucket,
+                self._src_object_name,
+                "http://bias.csr.unibo.it/maltoni/download/core50/",
+                f"{self._image_source}.zip",
+            )
+        for file_name in [
+            "paths.pkl",
+            "LUP.pkl",
+            "labels.pkl",
+        ]:
+            if not self._verify_file(file_name):
+                download_file(
+                    self._dataset_name,
+                    self._data_path,
+                    self._src_bucket,
+                    self._src_object_name,
+                    "https://vlomonaco.github.io/core50/data/",
+                    file_name,
+                )
+
+    def setup(self) -> None:
+        """Make assignments: train/test splits (CORe50 dataset only has train and test splits)."""
+        with open(os.path.join(self._data_path, self._dataset_name, "paths.pkl"), "rb") as f:
+            self._paths = pickle.load(f)
+
+        with open(os.path.join(self._data_path, self._dataset_name, "LUP.pkl"), "rb") as f:
+            self._LUP = pickle.load(f)
+
+        with open(os.path.join(self._data_path, self._dataset_name, "labels.pkl"), "rb") as f:
+            self._labels = pickle.load(f)
+
+        train_data = ImageDataset(*self._parse_file_lists("train"))
+        self._train_data, self._val_data = self._split_train_val_data(train_data)
+        self._test_data = ImageDataset(*self._parse_file_lists("test"))
+
+    def _parse_file_lists(self, stage: str) -> Tuple[List[str], List[int]]:
+        data_id = self.data_id if stage == "train" else -1
+        idx_list = self._LUP[self._scenario][0][data_id]
+        X = [os.path.join(self._complete_data_path, self._paths[idx]) for idx in idx_list]
+        y = self._labels[self._scenario][0][data_id]
+
+        return X, y

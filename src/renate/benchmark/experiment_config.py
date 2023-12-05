@@ -14,7 +14,9 @@ from wild_time_data import default_transform
 
 from renate.benchmark.datasets.nlp_datasets import HuggingFaceTextDataModule, MultiTextDataModule
 from renate.benchmark.datasets.vision_datasets import (
+    CDDBDataModule,
     CLEARDataModule,
+    CORE50DataModule,
     DomainNetDataModule,
     TorchVisionDataModule,
 )
@@ -50,6 +52,8 @@ from renate.data.data_module import RenateDataModule
 from renate.models import RenateModule
 from renate.models.prediction_strategies import ICaRLClassificationStrategy
 
+from renate.benchmark.models.spromptmodel import SPromptTransformer
+
 models = {
     "MultiLayerPerceptron": MultiLayerPerceptron,
     "ResNet18CIFAR": ResNet18CIFAR,
@@ -66,6 +70,7 @@ models = {
     "VisionTransformerH14": VisionTransformerH14,
     "HuggingFaceTransformer": HuggingFaceSequenceClassificationTransformer,
     "LearningToPromptTransformer": LearningToPromptTransformer,
+    "SPromptTransformer": SPromptTransformer,
 }
 
 
@@ -79,6 +84,9 @@ def model_fn(
     hidden_size: Optional[Tuple[int]] = None,
     dataset_name: Optional[str] = None,
     pretrained_model_name_or_path: Optional[str] = None,
+    prompt_size: int = 10,
+    clusters_per_task: int = 5,
+    per_task_classifier: bool = True,
 ) -> RenateModule:
     """Returns a model instance."""
     if model_name not in models:
@@ -108,6 +116,16 @@ def model_fn(
                 f"LearningToPromptTransformer, but model name specified is {model_name}."
             )
         model_kwargs["pretrained_model_name_or_path"] = pretrained_model_name_or_path
+    elif (updater is not None) and ("SPeft" in updater):
+        if not model_name.startswith("SPrompt"):
+            raise ValueError(
+                "SPrompt model updater is designed to work only with "
+                f"SPromptTransformer, but model name specified is {model_name}."
+            )
+        model_kwargs["pretrained_model_name_or_path"] = pretrained_model_name_or_path
+        model_kwargs["prompt_size"] = prompt_size
+        model_kwargs["clusters_per_task"] = clusters_per_task
+        model_kwargs["per_task_classifier"] = per_task_classifier
     if model_state_url is None:
         model = model_class(**model_kwargs)
     else:
@@ -174,6 +192,23 @@ def get_data_module(
             val_size=val_size,
             seed=seed,
         )
+    if dataset_name == "CDDB":
+        return CDDBDataModule(
+            data_path=data_path,
+            src_bucket=src_bucket,
+            src_object_name=src_object_name,
+            val_size=val_size,
+            seed=seed,
+        )
+    if dataset_name == "Core50":
+        return CORE50DataModule(
+            data_path=data_path,
+            src_bucket=src_bucket,
+            src_object_name=src_object_name,
+            val_size=val_size,
+            seed=seed,
+        )
+
     raise ValueError(f"Unknown dataset `{dataset_name}`.")
 
 
@@ -335,6 +370,16 @@ def _get_normalize_transform(dataset_name):
             DomainNetDataModule.dataset_stats["all"]["mean"],
             DomainNetDataModule.dataset_stats["all"]["std"],
         )
+    if dataset_name == "CDDB":
+        return transforms.Normalize(
+            CDDBDataModule.dataset_stats["CDDB"]["mean"],
+            CDDBDataModule.dataset_stats["CDDB"]["std"],
+        )
+    if dataset_name == "Core50":
+        return transforms.Normalize(
+            CORE50DataModule.dataset_stats["Core50"]["mean"],
+            CORE50DataModule.dataset_stats["Core50"]["std"],
+        )
 
 
 def train_transform(dataset_name: str, model_name: Optional[str] = None) -> Optional[Callable]:
@@ -391,6 +436,25 @@ def train_transform(dataset_name: str, model_name: Optional[str] = None) -> Opti
                 _get_normalize_transform(dataset_name),
             ]
         )
+    if dataset_name == "CDDB":
+        return transforms.Compose(
+            [
+                transforms.RandomResizedCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.ColorJitter(brightness=63 / 255),
+                transforms.ToTensor(),
+                _get_normalize_transform(dataset_name),
+            ]
+        )
+    if dataset_name == "Core50":
+        return transforms.Compose(
+            [
+                transforms.RandomResizedCrop(224),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                _get_normalize_transform(dataset_name),
+            ]
+        )
     raise ValueError(f"Unknown dataset `{dataset_name}`.")
 
 
@@ -437,6 +501,24 @@ def test_transform(
         return transforms.Compose(
             [
                 transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                _get_normalize_transform(dataset_name),
+            ]
+        )
+    if dataset_name == "CDDB":
+        return transforms.Compose(
+            [
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                _get_normalize_transform(dataset_name),
+            ]
+        )
+    if dataset_name == "Core50":
+        return transforms.Compose(
+            [
+                transforms.Resize(256),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 _get_normalize_transform(dataset_name),
